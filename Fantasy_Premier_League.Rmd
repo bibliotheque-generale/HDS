@@ -1,0 +1,632 @@
+---
+title: "Fantasy Premier League"
+author: "Stephen Perrine"
+date: "2022-11-06"
+output: pdf_document
+---
+
+```{r setup, include = FALSE}
+
+knitr::opts_chunk$set(echo = FALSE)
+
+library("tidyverse")
+library("caret")
+library("knitr")
+
+
+'%!in%' <- function(x,y)!'%in%'(x,y)
+
+
+RMSE <- function(true_value, predicted_value){
+  
+  sqrt(mean((true_value - predicted_value)^2))
+  
+}
+
+```
+
+# Introduction
+
+The English Premier League (EPL) is the most popular soccer league in the world. During the most recently completed season (2021-22), the EPL generated approximately 6.5M euros in revenue. Spain's La Liga, the EPL's nearest competitor (among soccer leagues), generated approximately 3.7M in revenue over the same season.
+
+Like many professional sports leagues across the world, the EPL runs an official 'Fantasy' league for its increasing fan base. In this fantasy league, fans build their own teams (composed of existing EPL players) and compete against one another in private groups. The chief challenge in managing such leagues is the **allocation of players**: how do you determine who gets whom?
+
+Most fantasy leagues rely on a **draft**, whereby each team in a given fantasy group gets a fixed number of 'player picks'. Picks are conducted in rounds, such that each team team gets one pick per round. At the start of the first round, all players in the EPL are available for selection. However, after a player has been picked by a team in the given fantasy group, that player is no longer available to other teams. 
+
+### The draft as an optimization problem
+
+A fantasy team's success is, to a large extent, forged in these opening drafts: given the players available, a fantasy manager must make the best possible pick. In this sense, the best possible pick is the individual in the existing pool of players who will generate the most fantasy points in the upcoming season. Individuals generally rely on their intuition for this challenge-- but to what extent can we use past performance to predict an individual player's future performance?
+
+### Intended Impact 
+
+This report will use data from the 2020-'21 season to predict player performance over the course of the 2021-'22 season. I will use the knowledge learnt from this exercise to optimize my player picks over the next fantasy premier league draft!
+
+
+# Methods/Analyisis
+
+## Getting the data
+
+Data on individual player performance over the 2020-'21 and 2021-'22 EPL seasons were acquired through the github account of [vaastaav](https://github.com/vaastav/Fantasy-Premier-League), who was kind enough to provide cleaned and tidied data scraped from the Fantasy Premier League website. Fortunately, in this instance the partitioning of training data and test data has already been done for us.
+
+Recall our central research question: **To what extend can we use past performance to predict future player performance?** The training data on which we will build our model are therefore the data on player performance over the 2020-'21 season (season_tag == 1), and our test data are the data on player performance over the 2021-'22 season (season_tag == 2). 
+
+The meansure of player performance that we've chosen to predict is **points per game** (ppg), which is defined as [total fantasy points] / [matches played].  
+
+```{r data_prep, message = FALSE}
+
+data <- read_csv("fpl_dataset.csv")
+
+
+test <- data %>%
+  filter(
+    season_tag == 2
+  ) %>%
+  select(
+    c(2:6)
+  ) %>%
+  mutate(
+    ppg = total_points/matches_played
+  )
+
+
+training <- data %>%
+  filter(
+    season_tag == 1
+  ) %>%
+  select(
+    c(2:7, 13, 16)
+  ) %>%
+  mutate(
+    ppg = total_points/matches_played
+  ) 
+
+
+rm(data)
+
+
+mu <- mean(training$ppg)
+
+
+```
+
+## Insight 1: The 'Team' Effect
+
+Followers of the EPL (or any sports league) will know that not all teams are created equal. Indeed, the EPL is more unequal than most professional sports leagues because there is no salary cap: teams are essentially free to spend whatever resources they have available. This creates a dynamic in which there are a few 'wealthy' teams who far outspend most competitors. 
+
+Knowing this, we should be able to find a 'team' effect in the data. To do so, we will subtract the player average (mu) from the team averages to determine how many additional points we should add to our player predictions given the team with whom a given player is associated. The following chart demonstrates the significance of the team effect: 
+
+&nbsp;
+
+```{r team_effect, echo = FALSE}
+
+team_effect <- training %>%
+  group_by(
+    team
+  ) %>%
+  summarise(
+    b_team = sum(ppg - mu)/n()
+  ) %>%
+  filter(
+    !is.na(team)
+  )
+
+
+ggplot(team_effect, aes(x = reorder(team, b_team), y = b_team, fill = b_team)) + 
+  geom_bar(
+    stat = "identity", color = "#000000"
+  ) +
+  ggtitle(
+    "Team Effects"
+  ) + 
+  xlab(
+    ""
+  ) +
+  ylab(
+    "Effect"
+  ) +
+  geom_hline(
+    yintercept = 0
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+    legend.position = "none",
+    plot.title = element_text(hjust = .5)
+  ) + 
+  scale_fill_distiller(
+    type = "div",
+    palette = 8,
+    direction = 1
+  )
+
+```
+
+&nbsp;
+
+## Insight 2: The 'Position' Effect
+
+The Fantasy Premier League officially classifies players according to four positions: Forwards, Midfielders, Defenders, and Goalkeepers. However, followers of the game will know that there are sub-types within each of these broad classifications. For example, there are attacking midfielders whose role is to facilitate the offense, while there are  defensive midfielders whose role is to break up the opponent's offense. The player stats for each of these sub-types will look drastically different.
+
+We can therefore refine our position classifications by looking at the stats on minutes played, goals scored, and assists provided. We will use **k-means clustering** to determine the sub-type associations under each of our original four classifications, and then quantify the 'position effect' for each of these new sub-types. 
+
+The following chart illustrates the significance of the sub-type effect as it relates to midfielders:
+
+&nbsp;
+
+``` {r position_effect, echo = FALSE, message = FALSE, warning = FALSE}
+
+cluster_data <- training %>%
+  mutate(
+    orientation = as.integer(ifelse(
+      position == "GK", 1, ifelse(
+        position == "DEF", 2, ifelse(
+          position == "MID", 3, 4
+  ))))) %>%
+  select(
+    name,
+    orientation
+  ) %>%
+  left_join(
+    training,
+    by = "name"
+  ) %>%
+  filter(
+    matches_played >= 10
+  ) %>%
+  select(
+    name,
+    orientation,
+    minutes, 
+    goals_scored,
+    assists
+  )
+
+
+### Midfield Clusters 
+
+midfielders <- cluster_data %>%
+  filter(
+    orientation == 3
+  ) %>%
+  mutate(
+    minutes = scale(minutes),
+    goals_scored = scale(goals_scored),
+    assists = scale(assists)
+  ) %>%
+  select(
+    minutes,
+    goals_scored,
+    assists
+  )
+
+
+set.seed(1, sample.kind = "Rounding")
+
+midfield_clusters <- kmeans(midfielders, 4, nstart = 15)
+
+
+midfielders_output <-
+  bind_cols(
+    select(filter(cluster_data, orientation == 3), name),
+    cluster = midfield_clusters$cluster
+  ) %>%
+  mutate(
+    category = "Midfielder",
+    group = ifelse(
+      cluster == 1, 'Sub', ifelse(
+        cluster == 2, "Tier 1", ifelse(
+          cluster == 3, "Tier 3", "Tier 2"
+  )))) %>%
+  select(
+    -cluster
+  )
+
+
+rm(midfielders, midfield_clusters)
+
+
+### Defender Clusters 
+
+defenders <- cluster_data %>%
+  filter(
+    orientation == 2
+  ) %>%
+  mutate(
+    minutes = scale(minutes),
+    goals_scored = scale(goals_scored),
+    assists = scale(assists)
+  ) %>%
+  select(
+    minutes,
+    goals_scored,
+    assists
+  )
+
+
+set.seed(2, sample.kind = "Rounding")
+
+defender_clusters <- kmeans(defenders, 3, nstart = 15)
+
+
+defenders_output <-
+  bind_cols(
+    select(filter(cluster_data, orientation == 2), name),
+    cluster = defender_clusters$cluster
+  ) %>%
+  mutate(
+    category = "Defender",
+    group = ifelse(
+      cluster == 1, 'Tier 1', ifelse(
+        cluster == 2, "Sub", "Tier 2"
+    ))) %>%
+    select(
+      -cluster
+    )
+
+
+rm(defenders, defender_clusters)
+
+
+### Forward Clusters 
+
+forwards <- cluster_data %>%
+  filter(
+    orientation == 4
+  ) %>%
+  mutate(
+    minutes = scale(minutes),
+    goals_scored = scale(goals_scored),
+    assists = scale(assists)
+  ) %>%
+  select(
+    minutes,
+    goals_scored,
+    assists
+  )
+
+
+set.seed(3, sample.kind = "Rounding")
+
+forward_clusters <- kmeans(forwards, 3, nstart = 15)
+
+
+forwards_output <-
+  bind_cols(
+    select(filter(cluster_data, orientation == 4), name),
+    cluster = forward_clusters$cluster
+  ) %>%
+  mutate(
+    category = "Forward",
+    group = ifelse(
+      cluster == 1, 'Tier2', ifelse(
+        cluster == 2, "Sub", "Tier 1"
+  ))) %>%
+  select(
+    -cluster
+  )
+
+
+rm(forwards, forward_clusters)
+
+
+### Goalies (no clusters needed)
+
+goalies_output <- cluster_data %>%
+  filter(
+    orientation == 1
+  ) %>%
+  select(
+    name
+  ) %>%
+  mutate(
+    category = "Goalie",
+    group = "Goalie"
+  )
+
+
+rm(cluster_data)
+
+
+
+### COMBINE ALL POSITIONS INTO ONE TABLE
+
+new_positions <- midfielders_output %>%
+  bind_rows(
+    defenders_output,
+    forwards_output,
+    goalies_output
+  )
+
+
+rm(midfielders_output, defenders_output, forwards_output, goalies_output)
+
+
+### UPDATE TRAINING AND TEST SETS WITH NEW POSITION CLASSIFICATIONS 
+
+updated_training <- training %>%
+  left_join(
+    new_positions,
+    by = "name"
+  ) %>%
+  select(
+    name,
+    category,
+    group,
+    team,
+    total_points,
+    matches_played,
+    ppg
+  )
+
+
+updated_testing <- test %>%
+  left_join(
+    new_positions,
+    by = "name"
+  ) %>%
+  select(
+    name,
+    category,
+    group,
+    team,
+    total_points,
+    matches_played,
+    ppg
+  )
+
+
+rm(training, test, new_positions)
+
+
+
+### Estimate Position Effect
+
+position_effect <- updated_training %>%
+  left_join(
+    team_effect,
+    by = "team"
+  ) %>%
+  group_by(
+    category,
+    group
+  ) %>%
+  summarise(
+    b_position = sum(ppg - mu - b_team)/n()
+  ) %>%
+  filter(
+    !is.na(
+      group
+    )
+  )
+
+
+ggplot(filter(updated_training, category == "Midfielder"), aes(x = ppg, fill = group)) + 
+  geom_density(alpha = .75) + 
+  scale_fill_manual(
+    values = c("#d73027", "#fdae61", "#ffffbf", "#1a9850"),
+    limits = c("Sub", "Tier 3", "Tier 2", "Tier 1")
+  ) +
+  geom_hline(
+    yintercept = 0
+  ) +
+  ggtitle(
+    "Points Distribution According to Midfielder Sub-type"
+  ) +
+  xlab(
+    "Points Per Game"
+  ) +
+  ylab(
+    element_blank()
+  ) +
+  theme_minimal() + 
+  theme(
+    legend.title = element_blank(),
+    legend.position = "bottom",
+    plot.title = element_text(hjust = .5)
+  )
+
+
+```
+
+
+## Insight 3: The 'Player Effect'
+
+The residuals in player performance that remain after removing the team and distinct position effects can be attributed to an individual 'Player Effect'. This is the measure of the individual's contribution beyond their particular circumstances (the team to which they belong and the distinct position they play).
+
+Interestingly, these individual player effects appear to be normally distributed, with a mean of 0 and standard deviation of .64. 
+
+
+``` {r player_effect, echo = FALSE, message = FALSE}
+
+player_effect <- updated_training %>%
+  left_join(
+    team_effect,
+    by = 'team'
+  ) %>%
+  left_join(
+    position_effect,
+    by = c("category", "group")
+  ) %>%
+  mutate(
+    b_player = ppg - b_team - b_position - mu
+  ) %>%
+  select(
+    name,
+    b_player
+  ) %>%
+  filter(
+    !is.na(
+      b_player
+    )
+  )
+
+
+ggplot(player_effect, aes(x = b_player)) + 
+  geom_histogram(
+    aes(y = ..density..),
+    color = "black", 
+    fill = "grey"
+  ) +
+  stat_function(
+    fun = dnorm, 
+    args = list(mean = mean(player_effect$b_player), sd = sd(player_effect$b_player)),
+    color = "#d73027",
+    size = 1
+  ) + 
+  ggtitle(
+    "Player Effects"
+  ) +
+  xlab(
+    element_blank()
+  ) +
+  ylab(
+    element_blank()
+  ) +
+  theme_minimal() +
+    theme(
+    plot.title = element_text(hjust = .5)
+  )
+
+```
+
+
+# Results 
+
+Now that we have modeled three individual effects, we can make predictions on the test data to determine how far we've improved on our baseline RMSE of 1.285. Recall that, in the baseline model, we simply predicted the mean points per game total of 2.6 for all players.
+
+| Our new models involves the following: 
+
+| &nbsp;
+
+|       **prediction** = mu + team effect + position effect + individual player effect
+
+&nbsp;
+
+With the new model, we've produced a RMSE of 1.184. That is an 8% improvement on the baseline.
+
+``` {r predictions, echo = FALSE, message = FALSE}
+
+predictions <- updated_testing %>%
+  left_join(
+    team_effect,
+    by = "team"
+  ) %>%
+  left_join(
+    position_effect,
+    by = c("category", "group")
+  ) %>%
+  left_join(
+    player_effect,
+    by = "name"
+  ) %>%
+  replace_na(
+    list(
+      b_team = 0,
+      b_position = 0,
+      b_player = 0
+    )
+  ) %>%
+  mutate(
+    pred = mu + b_team + b_position + b_player
+  ) 
+
+
+print(paste("RMSE with new three effect model = ", RMSE(updated_testing$ppg, predictions$pred), sep = ""))
+
+print(paste("RMSE when just guessing the average = ", RMSE(updated_testing$ppg, mu), sep = ""))
+
+
+errors <- predictions %>%
+  mutate(
+    error = pred - ppg
+  )
+
+```
+
+&nbsp;
+&nbsp;
+
+## Model Performance 
+
+Although our new model has improved on the baseline, the improvement itself is a bit underwhelming. Let's take a look at the most egregious errors to determine why.
+
+### Overprediction
+
+The instances below illustrate two situations where our model **overpredicts**: 
+
+``` {r overpredicted, echo = FALSE, message = FALSE}
+
+errors %>%
+  select(
+    c(1:4,7,11:12)
+  ) %>%
+  arrange(
+    desc(error)
+  ) %>%
+    top_n(
+    10
+  ) %>%
+  kable()
+
+```
+
+
+The first situation occurs when a player moves from a lower performing team to a higher performing team. The errors for Jesse Lingard and Jack Grealish capture this situation. Both are players who had significant player effects based on their performance at West Ham and Aston Villa, respectively. However, having moved to a bigger club, more points are captured in their team effect, meaning the player effect would need to be downgraded accordingly.
+
+The second situation where our model fails occurs when players only end up playing a handful of matches. This is either due to injury or lack of selection. 
+
+
+### Underprediction
+
+The instances below illustrate one important situation where our model **underpredicts**: 
+
+``` {r underpredicted, echo=FALSE, message = FALSE}
+
+errors %>%
+  select(
+    c(1:4,7,11:12)
+  ) %>%
+  arrange(
+    error
+  ) %>%
+  top_n(
+    10
+  ) %>%
+  kable()
+
+```
+
+
+The instances captured above generally lack a position effect. This occurs when 'new' players join the league, because they have no past data on which to classify them. This could also happen to players who missed lengthy periods of the past season due to injury (like Virgil Van Dyke)-- these players were discounted from the classification algorithm because they lacked enough data.
+
+&nbsp;
+&nbsp;
+&nbsp;
+
+## Model Improvement
+
+Thus, our predictions could be improved through the addition of human judgement. 
+
+* When players move from lower to higher performing teams, a human could manually downgrade the player effects accordingly.
+
+* When new players join the league, a human could manually classify them according to position and estimate a player effect based on their performance in their previous league.
+
+* When players return from lengthy injuries, a human could manually classify their position and estimate a player effect based on their last substantial season in the EPL.
+
+
+# Conclusion
+
+This report has demonstrated that past player performance is indeed useful in predicting future performance. By building a model based entirely on one season's worth of data, we were able to achieve RMSE of 1.184 ppg on our predictions regarding player performance in the following season. 
+
+However, as illustrated above, there are specific situations where our model produces poor predictions. In these instances, our goal of optimizing player picks would be best achieved by combining our model predictions with human judgement. Given that most fantasy managers rely exclusively on human judgement, the model should give us a competitive edge.
+
+
+
+
+
+
+
+
+
+
+
