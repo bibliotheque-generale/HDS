@@ -46,7 +46,7 @@ This report will use data from the 2020-'21 season to predict player performance
 
 ## Getting the data
 
-Data on individual player performance over the 2020-'21 and 2021-'22 EPL seasons were acquired through the github account of [vaastaav](https://github.com/vaastav/Fantasy-Premier-League), who was kind enough to provide cleaned and tidied data scraped from the Fantasy Premier League website. Fortunately, in this instance the partitioning of training data and test data has already been done for us.
+Data on individual player performance over the 2020-'21 and 2021-'22 EPL seasons were acquired through the github account of [vaastaav](https://github.com/vaastav/Fantasy-Premier-League), who was kind enough to provide cleaned and tidied data scraped from the Fantasy Premier League website. Fortunately, in this instance the partitioning of training data and test data is very simple.
 
 Recall our central research question: **To what extend can we use past performance to predict future player performance?** The training data on which we will build our model are therefore the data on player performance over the 2020-'21 season (season_tag == 1), and our test data are the data on player performance over the 2021-'22 season (season_tag == 2). 
 
@@ -54,7 +54,7 @@ The meansure of player performance that we've chosen to predict is **points per 
 
 ```{r data_prep, message = FALSE}
 
-data <- read_csv("fpl_dataset.csv")
+data <- read_csv("https://raw.githubusercontent.com/bibliotheque-generale/HDS/main/fpl_dataset.csv")
 
 
 test <- data %>%
@@ -605,7 +605,7 @@ The instances captured above generally lack a position effect. This occurs when 
 
 ## Model Improvement
 
-Thus, our predictions could be improved through the addition of human judgement. 
+Thus, our predictions could be improved through the addition of human judgement: 
 
 * When players move from lower to higher performing teams, a human could manually downgrade the player effects accordingly.
 
@@ -618,7 +618,9 @@ Thus, our predictions could be improved through the addition of human judgement.
 
 This report has demonstrated that past player performance is indeed useful in predicting future performance. By building a model based entirely on one season's worth of data, we were able to achieve RMSE of 1.184 ppg on our predictions regarding player performance in the following season. 
 
-However, as illustrated above, there are specific situations where our model produces poor predictions. In these instances, our goal of optimizing player picks would be best achieved by combining our model predictions with human judgement. Given that most fantasy managers rely exclusively on human judgement, the model should give us a competitive edge.
+However, as illustrated above, there are specific situations where our model produces poor predictions. In these instances, our goal of optimizing player picks would be best achieved by combining our model predictions with human judgement. 
+
+Given that most fantasy managers rely exclusively on human judgement, the model should give us a competitive edge!
 
 
 

@@ -29,7 +29,7 @@ RMSE <- function(true_value, predicted_value){
 ##############################################
 
 
-data <- read_csv("fpl_dataset.csv")
+data <- read_csv("https://raw.githubusercontent.com/bibliotheque-generale/HDS/main/fpl_dataset.csv")
 
 
 test <- data %>%
@@ -529,5 +529,5 @@ errors <- predictions %>%
 
 ###
 
-rm(list=ls())
+#rm(list=ls())
 
